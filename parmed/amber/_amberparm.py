@@ -374,17 +374,18 @@ class AmberParm(AmberFormat, Structure):
         # present as a way to hack entries into the 1-4 pairlist. See
         # https://github.com/ParmEd/ParmEd/pull/145 for discussion. The solution
         # here is to simply set that periodicity to 1.
-        for dt in inst.dihedral_types:
-            if dt.phi_k == 0 and dt.per == 0:
-                dt.per = 1.0
-            elif dt.per == 0:
-                warn('Periodicity of 0 detected with non-zero force constant. '
-                     'Changing periodicity to 1 and force constant to 0 to '
-                     'ensure 1-4 nonbonded pairs are properly identified. This '
-                     'might cause a shift in the energy, but will leave forces '
-                     'unaffected', AmberWarning)
-                dt.phi_k = 0.0
-                dt.per = 1.0
+#        for dt in inst.dihedral_types:
+#            if dt.phi_k == 0 and dt.per == 0:
+#                dt.per = 1.0
+#            elif dt.per == 0:
+#                warn('Periodicity of 0 detected with non-zero force constant. '
+#                     'Changing periodicity to 1 and force constant to 0 to '
+#                     'ensure 1-4 nonbonded pairs are properly identified. This '
+#                     'might cause a shift in the energy, but will leave forces '
+#                     'unaffected', AmberWarning)
+#                dt.phi_k = 0.0
+#                dt.per = 1.0
+        inst._cleanup_dihedrals_with_periodicity_zero()
         inst.remake_parm()
         inst._set_nonbonded_tables(nbfixes)
         n_copy = inst.pointers.get('NCOPY', 1)
@@ -2116,6 +2117,38 @@ class AmberParm(AmberFormat, Structure):
             # General triclinic
             self.parm_data['POINTERS'][IFBOX] = self.pointers['IFBOX'] = 3
 
+    def _cleanup_dihedrals_with_periodicity_zero(self):
+        """
+        For torsions with only a single term and a periodicity set to 0, make sure pmemd still
+        properly recognizes the necessary exception parameters. update_dihedral_exclusions will
+        make sure that if a dihedral has a type pn0 *and* ignore_end is set to False (which means
+        that it is required to specify exclusions), then it is the *only* torsion between those
+        atoms in the system. This allows us to scan through our dihedrals, look for significant
+        terms that have pn==0, and simply add another dihedral with pn=1 and k=0 to ensure that
+        pmemd will always get that exception correct
+        """
+        dt = None
+        new_dihedrals = []
+        #print("b4",self.dihedrals)
+        for dih in self.dihedrals:
+            if dih.ignore_end or dih.type.per != 0:
+                continue
+
+            # If we got here, ignore_end must be False and out periodicity must be 0. So add
+            # another dihedral
+            if dt is None:
+                dt = DihedralType(0, 1, 0, dih.type.scee, dih.type.scnb, list=self.dihedral_types)
+                self.dihedral_types.append(dt)
+            new_dihedrals.append(
+                Dihedral(dih.atom1, dih.atom2, dih.atom3, dih.atom4, improper=dih.improper,
+                         ignore_end=False, type=dt)
+            )
+            # Now that we added the above dihedral, we can start ignoring the end-group interactions
+            # on this dihedral
+            dih.ignore_end = True
+        if new_dihedrals:
+            self.dihedrals.extend(new_dihedrals)
+        #print("na",self.dihedrals)
     #===================================================
 
     def __getstate__(self):
